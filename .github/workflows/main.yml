@@ -59,9 +59,9 @@ jobs:
 
             IMAGE_TAG="${{ github.sha }}"
 
-            FRONTEND_IMAGE="$DOCKER_USERNAME/fullstack-frontend"
+            FRONTEND_IMAGE="$DOCKER_USERNAME/assignment-frontend"
 
-            BACKEND_IMAGE="$DOCKER_USERNAME/fullstack-backend"
+            BACKEND_IMAGE="$DOCKER_USERNAME/assignment-backend"
 
 
             # ========================================
