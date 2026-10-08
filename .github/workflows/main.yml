@@ -1,0 +1,287 @@
+name: Full Stack CI/CD
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ============================================
+      # 1. Setup SSH
+      # ============================================
+
+      - name: Setup SSH
+        run: |
+
+          mkdir -p ~/.ssh
+
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/ec2_key
+
+          chmod 600 ~/.ssh/ec2_key
+
+          ssh-keyscan -H "${{ secrets.EC2_HOST }}" \
+            >> ~/.ssh/known_hosts
+
+
+      # ============================================
+      # 2. Deploy to EC2
+      # ============================================
+
+      - name: Deploy application
+        run: |
+
+          ssh \
+            -i ~/.ssh/ec2_key \
+            ${{ secrets.EC2_USERNAME }}@${{ secrets.EC2_HOST }} << 'EOF'
+
+            set -e
+
+            echo "======================================"
+            echo "Starting deployment"
+            echo "======================================"
+
+
+            # ========================================
+            # Variables
+            # ========================================
+
+            APP_DIR="$HOME/fullstack-cicd"
+
+            REPO_URL="https://github.com/Railgun2005/DevOps-assign2.git"
+
+            DOCKER_USERNAME="${{ secrets.DOCKERHUB_USERNAME }}"
+
+            IMAGE_TAG="${{ github.sha }}"
+
+            FRONTEND_IMAGE="$DOCKER_USERNAME/fullstack-frontend"
+
+            BACKEND_IMAGE="$DOCKER_USERNAME/fullstack-backend"
+
+
+            # ========================================
+            # Clone repository if it doesn't exist
+            # ========================================
+
+            if [ ! -d "$APP_DIR/.git" ]; then
+
+              echo "======================================"
+              echo "Repository not found."
+              echo "Cloning repository..."
+              echo "======================================"
+
+              rm -rf "$APP_DIR"
+
+              git clone "$REPO_URL" "$APP_DIR"
+
+            fi
+
+
+            # ========================================
+            # Go to application directory
+            # ========================================
+
+            cd "$APP_DIR"
+
+
+            # ========================================
+            # Pull latest code
+            # ========================================
+
+            echo "======================================"
+            echo "Pulling latest source code..."
+            echo "======================================"
+
+            git fetch origin
+
+            git reset --hard origin/main
+
+
+            # ========================================
+            # Show current commit
+            # ========================================
+
+            echo "======================================"
+            echo "Current Git commit:"
+            echo "======================================"
+
+            git rev-parse HEAD
+
+
+            # ========================================
+            # Check Docker network
+            # ========================================
+
+            echo "======================================"
+            echo "Checking Docker network..."
+            echo "======================================"
+
+            docker network inspect app-network \
+              >/dev/null 2>&1 || \
+              docker network create app-network
+
+
+            # ========================================
+            # Check MongoDB
+            # ========================================
+
+            echo "======================================"
+            echo "Checking MongoDB..."
+            echo "======================================"
+
+            if ! docker ps -a \
+              --format '{{.Names}}' \
+              | grep -q '^mongodb$'
+            then
+
+              echo "Creating MongoDB container..."
+
+              docker volume create mongodb_data
+
+              docker run -d \
+                --name mongodb \
+                --network app-network \
+                -v mongodb_data:/data/db \
+                --restart unless-stopped \
+                mongo:8
+
+            else
+
+              echo "MongoDB already exists."
+
+              docker start mongodb 2>/dev/null || true
+
+            fi
+
+
+            # ========================================
+            # Build frontend
+            # ========================================
+
+            echo "======================================"
+            echo "Building frontend..."
+            echo "======================================"
+
+            docker build \
+              -t "$FRONTEND_IMAGE:$IMAGE_TAG" \
+              -t "$FRONTEND_IMAGE:latest" \
+              ./frontend
+
+
+            # ========================================
+            # Build backend
+            # ========================================
+
+            echo "======================================"
+            echo "Building backend..."
+            echo "======================================"
+
+            docker build \
+              -t "$BACKEND_IMAGE:$IMAGE_TAG" \
+              -t "$BACKEND_IMAGE:latest" \
+              ./backend
+
+
+            # ========================================
+            # Push frontend
+            # ========================================
+
+            echo "======================================"
+            echo "Pushing frontend to Docker Hub..."
+            echo "======================================"
+
+            docker push "$FRONTEND_IMAGE:$IMAGE_TAG"
+
+            docker push "$FRONTEND_IMAGE:latest"
+
+
+            # ========================================
+            # Push backend
+            # ========================================
+
+            echo "======================================"
+            echo "Pushing backend to Docker Hub..."
+            echo "======================================"
+
+            docker push "$BACKEND_IMAGE:$IMAGE_TAG"
+
+            docker push "$BACKEND_IMAGE:latest"
+
+
+            # ========================================
+            # Remove old backend
+            # ========================================
+
+            echo "Removing old backend..."
+
+            docker rm -f backend 2>/dev/null || true
+
+
+            # ========================================
+            # Start new backend
+            # ========================================
+
+            echo "Starting new backend..."
+
+            docker run -d \
+              --name backend \
+              --network app-network \
+              -e MONGO_URI=mongodb://mongodb:27017/fullstackdb \
+              --restart unless-stopped \
+              "$BACKEND_IMAGE:$IMAGE_TAG"
+
+
+            # ========================================
+            # Remove old frontend
+            # ========================================
+
+            echo "Removing old frontend..."
+
+            docker rm -f frontend 2>/dev/null || true
+
+
+            # ========================================
+            # Start new frontend
+            # ========================================
+
+            echo "Starting new frontend..."
+
+            docker run -d \
+              --name frontend \
+              --network app-network \
+              -p 80:80 \
+              --restart unless-stopped \
+              "$FRONTEND_IMAGE:$IMAGE_TAG"
+
+
+            # ========================================
+            # Wait
+            # ========================================
+
+            echo "Waiting for containers..."
+
+            sleep 5
+
+
+            # ========================================
+            # Deployment status
+            # ========================================
+
+            echo "======================================"
+            echo "Deployment completed"
+            echo "======================================"
+
+            docker ps
+
+
+            echo "======================================"
+            echo "Deployed image tag:"
+            echo "$IMAGE_TAG"
+            echo "======================================"
+
+          EOF
